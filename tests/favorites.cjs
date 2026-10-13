@@ -1,5 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const test=require('node:test'),assert=require('node:assert/strict');
+module.exports={page};
 function page(file,storage=new Map(),blocked=false){
   const html=fs.readFileSync(path.join(__dirname,'../docs',file),'utf8');
   const scripts=[...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
