@@ -25,7 +25,7 @@
   }
   const encode=value=>btoa(unescape(encodeURIComponent(JSON.stringify(value,null,2)+'\n')));
   const decode=value=>JSON.parse(decodeURIComponent(escape(atob(value.replace(/\s/g,'')))));
-  function createStore({library,ids,storage,fetcher,apply,status=()=>{},encodeData=encode,decodeData=decode}){
+  function createStore({library,ids,storage,fetcher,apply,status=()=>{},keyStatus=()=>{},encodeData=encode,decodeData=decode}){
     if(!['retro','switch-vita'].includes(library))throw Error('Unknown library');
     const known=new Set(ids),prefix='story-favorites-sync-v1-'+library;
     let remote=empty(),ready=false,verified='',busy=false,rerun=false,epoch=0;
@@ -38,6 +38,10 @@
     if(saved&&typeof saved==='object'&&!Array.isArray(saved))for(const [id,v] of Object.entries(saved))if(known.has(id)&&typeof v==='boolean')pending[id]=v;
     imported=readLocal(prefix+'-imported',false)===true;
     function token(){try{const own=storage.getItem(TOKEN_KEY);return own==='disabled'?'':own||storage.getItem(DISCOVERY_KEY)||''}catch{return ''}}
+    function reportKey(){
+      const value=token();
+      keyStatus(!value?'등록된 열쇠 없음 · 열쇠를 입력하고 저장하세요.':verified===value?'열쇠 저장됨 · 소유자 확인 완료':'열쇠 저장됨 · 권한 확인 필요');
+    }
     function headers(value=''){return {Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',...(value?{Authorization:'Bearer '+value}:{})}}
     async function request(url,options={}){
       return fetcher(url,{...options,cache:'no-store',credentials:'omit',redirect:'error',signal:AbortSignal.timeout(15000)});
@@ -70,7 +74,7 @@
       const repo=await request(REPO,{headers:headers(value)});
       if(!repo.ok||!(await repo.json()).permissions?.push)return false;
       if(value!==token())return false;
-      verified=value;return true;
+      verified=value;reportKey();return true;
     }
     async function flush(){
       if(busy){rerun=true;return false}
@@ -90,9 +94,13 @@
           Object.assign(next.libraries[library],changes);
           const response=await request(CONTENT,{method:'PUT',headers:{...headers(currentToken),'Content-Type':'application/json'},body:JSON.stringify({branch:BRANCH,sha:latest.sha,message:'chore(favorites): '+library+' 찜 목록 갱신',content:encodeData(next)})});
           if(response.status===409)continue;
-          if(!response.ok){if(response.status===401||response.status===403)verified='';throw Error('save failed')}
+          if(!response.ok){
+            if(response.status===401||response.status===403){verified='';keyStatus('열쇠는 저장되어 있지만 GitHub 쓰기가 거부됐습니다. Contents: Read and write 권한을 확인하세요.');}
+            throw Error('save failed');
+          }
           if(currentEpoch!==epoch)return false;
           remote=next;
+          keyStatus('열쇠 저장됨 · GitHub 쓰기 확인 완료');
           for(const [id,value] of Object.entries(changes))if(pending[id]===value)delete pending[id];
           imported=true;writeLocal(prefix+'-imported',true);persist();writeLocal(prefix+'-cache',remote);display();
           status(Object.keys(pending).length?'추가 변경 저장 대기 중':'GitHub 찜 동기화 완료');
@@ -111,12 +119,15 @@
       try{
         const latest=await read();remote=latest.data;ready=true;writeLocal(prefix+'-cache',remote);
         const value=token();
-        if(value&&verified!==value)try{await verify(value)}catch{verified=''}
+        if(value&&verified!==value)try{
+          if(!await verify(value))keyStatus('열쇠는 저장되어 있지만 소유자·Game-Story-Library 권한을 확인하지 못했습니다.');
+        }catch{verified='';keyStatus('열쇠 저장됨 · 네트워크 문제로 권한을 확인하지 못했습니다.');}
+        else reportKey();
         importLegacy();display();
         if(verified){status('GitHub 찜 동기화 중');await flush()}
         else status(value?'찜 불러옴 · 열쇠의 소유자·Game-Story-Library 쓰기 권한을 확인하세요.':'GitHub 찜 불러옴 · 열쇠 없이 한 변경은 이 기기에 보관합니다.');
         return true;
-      }catch{status('GitHub 연결 실패 · 기존 찜을 유지합니다. 새로고침으로 다시 시도하세요.');return false}
+      }catch{reportKey();status('GitHub 연결 실패 · 기존 찜을 유지합니다. 새로고침으로 다시 시도하세요.');return false}
     }
     function set(id,selected){
       if(!known.has(id)||typeof selected!=='boolean')return;
@@ -127,27 +138,33 @@
     }
     async function saveToken(value,initial=[]){
       epoch++;verified='';
-      const trimmed=value.trim();
-      try{storage.setItem(TOKEN_KEY,trimmed)}catch{status('열쇠를 이 브라우저에 저장할 수 없습니다.');return false}
-      if(!trimmed){status('이 기기의 서재 열쇠를 비웠습니다.');return false}
+      const trimmed=value.trim()||token();
+      if(!trimmed){keyStatus('열쇠를 먼저 입력하세요.');status('등록할 열쇠가 없습니다.');return false}
       try{
-        if(!await verify(trimmed)){status('소유자 또는 Game-Story-Library 쓰기 권한이 없습니다.');return false}
+        storage.setItem(TOKEN_KEY,trimmed);
+        if(storage.getItem(TOKEN_KEY)!==trimmed)throw Error('not persisted');
+      }catch{keyStatus('브라우저 저장 차단 · 열쇠가 저장되지 않았습니다.');status('열쇠를 이 브라우저에 저장할 수 없습니다.');return false}
+      reportKey();
+      try{
+        if(!await verify(trimmed)){keyStatus('열쇠는 저장되어 있지만 소유자 또는 Game-Story-Library 권한이 없습니다.');status('소유자 또는 Game-Story-Library 쓰기 권한이 없습니다.');return false}
         status('열쇠 확인 완료');return await refresh(initial);
-      }catch{status('열쇠 확인 실패 · 네트워크와 권한을 확인하세요.');return false}
+      }catch{keyStatus('열쇠 저장됨 · 네트워크 문제로 권한을 확인하지 못했습니다.');status('열쇠 확인 실패 · 네트워크와 권한을 확인하세요.');return false}
     }
     function clearToken(){
       epoch++;verified='';
-      // Empty string deliberately blocks discovery-token fallback on this device.
+      // The sentinel deliberately blocks discovery-token fallback on this device.
       try{storage.setItem(TOKEN_KEY,'disabled')}catch{}
+      reportKey();
       status('이 기기의 서재 열쇠 사용을 중지했습니다. 발굴 아카이브 열쇠는 유지됩니다.');
     }
+    reportKey();
     return {set,refresh,saveToken,clearToken,getPending:()=>({...pending})};
   }
   function boot({library,ids,getFavorites,apply,status}){
     let storage;
     try{storage=window.localStorage}catch{storage={getItem(){return null},setItem(){throw Error('blocked')}}}
-    const store=createStore({library,ids,storage,fetcher:window.fetch.bind(window),apply,status});
     const node=id=>document.getElementById(id);
+    const store=createStore({library,ids,storage,fetcher:window.fetch.bind(window),apply,status,keyStatus:message=>{node('sync-key-status').textContent=message}});
     node('sync-save').onclick=async()=>{
       const input=node('sync-token'),value=input.value;input.value='';
       node('sync-save').disabled=true;
