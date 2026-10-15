@@ -23,7 +23,7 @@ Dollars Archive의 레트로 스토리 게임 및 Nintendo Switch·PS Vita 비�
 
 `docs/data/favorites.json`은 빈 데이터 양식입니다. **실제 찜 데이터가 있는 브랜치를 이 빈 양식으로 덮어쓰지 않습니다.** 첫 게시 때 `watchlist-data` 브랜치를 확인하고, 없을 때만 새 브랜치와 데이터 파일을 준비합니다. 이후 사이트 수정은 main에, 실제 찜 저장은 watchlist-data에 분리합니다. 별도 DB·OAuth 앱은 필요하지 않습니다.
 
-동기화 코드는 각 HTML에 함께 포함해 별도 파일 로딩에 의존하지 않습니다. 원본은 `docs/assets/favorites-sync.js`이며 테스트에서 두 HTML의 포함 코드가 일치하는지 검사합니다.
+동기화 코드는 각 HTML에 함께 포함해 별도 파일 로딩에 의존하지 않습니다. 원본은 `docs/assets/favorites-sync.js`이며 테스트에서 두 HTML의 포함 코드가 일치하는지 검사합니다. 계정·권한 확인은 발굴 아카이브와 같은 fetch 요청·헤더를 사용하며 `AbortSignal.timeout`에 의존하지 않습니다. 오류는 계정 확인·저장소 권한 확인·찜 불러오기·찜 저장과 HTTP 상태로 나눠 표시하고 열쇠 원문이나 서버 응답 본문은 표시하지 않습니다.
 
 ## 검증
 

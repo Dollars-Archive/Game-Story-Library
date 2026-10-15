@@ -21,7 +21,7 @@ function server(){
       s.data=decode(body.content);s.sha++;
       return response(200,{content:{sha:String(s.sha)}});
     }
-    assert(options.cache==='no-store');assert(options.redirect==='error');
+    assert(options.cache==='no-store');assert(!('redirect' in options));assert(!('credentials' in options));assert(!('signal' in options));
     return response(200,{encoding:'base64',content:encode(s.data),sha:String(s.sha)});
   };
   return s;
@@ -61,7 +61,7 @@ test('owner verification rejects foreign keys and repository without push access
     const s=server();change(s);const pc=client(s,{legacy:['A']});await pc.start();
     pc.store.set('B',true);await settle();
     assert.equal(s.calls.filter(c=>c.options.method==='PUT').length,0);
-    assert(pc.messages.some(m=>m.includes('権')||m.includes('권한')));
+    assert(pc.messages.some(m=>m.includes('계정')||m.includes('권한')));
     assert(!pc.messages.some(m=>m.includes('test-key')));
   }
 });
@@ -108,4 +108,38 @@ test('blocked storage is explicit and does not discard the in-memory change',asy
   pc.store.set('A',true);assert.equal(pc.store.getPending().A,true);
   assert(pc.messages.at(-1).includes('이번 화면'));
   assert.equal(await pc.store.saveToken('test-key'),false);
+});
+
+test('verification uses discovery-compatible fetch options and headers',async()=>{
+  const s=server(),pc=client(s);await pc.start();
+  const auth=s.calls.filter(c=>c.url==='https://api.github.com/user'||c.url==='https://api.github.com/repos/Dollars-Archive/Game-Story-Library');
+  assert.equal(auth.length,2);
+  for(const call of auth)assert.deepEqual(call.options,{cache:'no-store',headers:{Accept:'application/vnd.github+json',Authorization:'Bearer test-key'}});
+});
+test('missing AbortSignal.timeout does not prevent key verification or favorite saving',async()=>{
+  const vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
+  const context={module:{exports:{}},AbortSignal:{}};
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../docs/assets/favorites-sync.js'),'utf8'),context);
+  const s=server(),storage=new Map();
+  const store=context.module.exports.createStore({library:'retro',ids:['A'],storage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v)},fetcher:s.fetch,apply(){},encodeData:encode,decodeData:decode});
+  assert(await store.saveToken('test-key',['A']));assert.equal(s.data.libraries.retro.A,true);
+});
+test('account and repository failures identify the exact step without leaking key text',async()=>{
+  for(const target of ['https://api.github.com/user','https://api.github.com/repos/Dollars-Archive/Game-Story-Library']){
+    for(const code of [0,401,403,404]){
+      const s=server(),original=s.fetch;
+      s.fetch=async(url,options)=>{
+        if(url!==target)return original(url,options);
+        if(!code)throw Error('test-key private details');
+        return {ok:false,status:code,json:async()=>({})};
+      };
+      const pc=client(s);await pc.start();
+      assert.equal(await pc.store.saveToken('test-key'),false);
+      const message=pc.messages.at(-1);
+      assert(message.includes(target.endsWith('/user')?'계정 확인':'권한 확인'),message);
+      assert(message.includes(code?'HTTP '+code:'요청 실패'),message);
+      assert(!message.includes('test-key'));assert(!message.includes('private details'));
+    }
+  }
 });
