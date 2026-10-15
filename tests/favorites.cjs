@@ -1,7 +1,7 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const test=require('node:test'),assert=require('node:assert/strict');
 module.exports={page};
-function page(file,storage=new Map(),blocked=false){
+function page(file,storage=new Map(),blocked=false,syncApi=null){
   const html=fs.readFileSync(path.join(__dirname,'../docs',file),'utf8');
   const scripts=[...html.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)];
   const dataset=scripts.find(m=>m[1].includes('application/json'))[2];
@@ -11,7 +11,7 @@ function page(file,storage=new Map(),blocked=false){
   for(const m of html.matchAll(/<select\b[^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/select>/g)){const options=[...m[2].matchAll(/<option\b([^>]*)>([^<]*)/g)];const opt=options.find(x=>x[1].includes('selected'))||options[0];node(m[1]).value=opt?.[1].match(/value="([^"]*)"/)?.[1]??opt?.[2]??''}
   node('dataset').textContent=dataset;
   const tabs=[...html.matchAll(/data-tab="([^"]+)"/g)].map(m=>Object.assign(node('tab-'+m[1]),{dataset:{tab:m[1]}}));
-  const context={document:{getElementById:node,querySelectorAll:()=>tabs,body:node('body')},window:{scrollTo(){},addEventListener(k,f){events[k]=f}},localStorage:{getItem(k){if(blocked)throw Error('blocked');return storage.get(k)||null},setItem(k,v){if(blocked)throw Error('blocked');storage.set(k,v)}},URL,console};
+  const context={document:{getElementById:node,querySelectorAll:()=>tabs,body:node('body')},window:{StoryFavoritesSync:syncApi,scrollTo(){},addEventListener(k,f){events[k]=f}},localStorage:{getItem(k){if(blocked)throw Error('blocked');return storage.get(k)||null},setItem(k,v){if(blocked)throw Error('blocked');storage.set(k,v)}},URL,console};
   vm.createContext(context);vm.runInContext(scripts.filter(m=>!m[1].includes('application/json')).map(m=>m[2]).join('\n'),context);
   return {node,context,events,storage,run:code=>vm.runInContext(code,context),clickFavorite(id){node('results').listeners.click({target:{closest:selector=>selector==='[data-favorite]'?{dataset:{favorite:id}}:null}})}};
 }
@@ -42,3 +42,17 @@ for(const file of ['retro-story-library.html','switch-vita-vn.html']){
 test('two libraries use separate storage keys',()=>{
   const storage=new Map(),retro=page('retro-story-library.html',storage);retro.clickFavorite(retro.run('filtered[0].id'));assert.equal(page('switch-vita-vn.html',storage).run('favorites.size'),0);
 });
+
+for(const [file,library] of [['retro-story-library.html','retro'],['switch-vita-vn.html','switch-vita']]){
+  test(`${file}: sync adapter updates real favorites and filters while keeping library identity`,()=>{
+    let adapter;const changes=[];
+    const h=page(file,new Map(),false,{boot(options){adapter=options;return {set:(id,value)=>changes.push([id,value])}}});
+    assert.equal(adapter.library,library);
+    const id=h.run('works[0].id');assert(adapter.ids.includes(id));
+    adapter.apply([id]);assert.equal(h.run('favorites.size'),1);
+    h.node('favorites-only').checked=true;h.node('favorites-only').onchange();
+    assert.equal(h.run('filtered.length'),1);h.clickFavorite(id);
+    assert.deepEqual(changes,[[id,false]]);assert.equal(h.run('filtered.length'),0);
+    adapter.apply([id]);assert.equal(h.run('filtered.length'),1);
+  });
+}
